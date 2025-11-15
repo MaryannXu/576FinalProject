@@ -47,11 +47,49 @@ def render_frame(pieces: List[Piece], t: float, canvas_size: int) -> np.ndarray:
         cy = lerp(piece.start_center[1], piece.end_center[1], t)
         angle = lerp(piece.start_angle, piece.end_angle, t)
 
-        # TODO:
-        # 1. Rotate piece.image by 'angle'
-        # 2. Paste onto 'frame' with center at (cx, cy)
-        # You can use cv2.getRotationMatrix2D + cv2.warpAffine,
-        # then place it on the canvas.
+        # Get piece image dimensions
+        h, w = piece.image.shape[:2]
+        center_piece = (w // 2, h // 2)
+        
+        # Get rotation matrix
+        M = cv2.getRotationMatrix2D(center_piece, angle, 1.0)
+        
+        # Calculate new dimensions after rotation
+        cos = np.abs(M[0, 0])
+        sin = np.abs(M[0, 1])
+        new_w = int((h * sin) + (w * cos))
+        new_h = int((h * cos) + (w * sin))
+        
+        # Adjust rotation matrix for new center
+        M[0, 2] += (new_w / 2) - center_piece[0]
+        M[1, 2] += (new_h / 2) - center_piece[1]
+        
+        # Rotate the piece image
+        rotated = cv2.warpAffine(piece.image, M, (new_w, new_h), 
+                                 flags=cv2.INTER_LINEAR, 
+                                 borderMode=cv2.BORDER_CONSTANT,
+                                 borderValue=(0, 0, 0))
+        
+        # Calculate position to paste on canvas
+        x1 = int(cx - new_w // 2)
+        y1 = int(cy - new_h // 2)
+        x2 = x1 + new_w
+        y2 = y1 + new_h
+        
+        # Clip to canvas bounds
+        src_x1 = max(0, -x1)
+        src_y1 = max(0, -y1)
+        src_x2 = min(new_w, canvas_size - x1)
+        src_y2 = min(new_h, canvas_size - y1)
+        
+        dst_x1 = max(0, x1)
+        dst_y1 = max(0, y1)
+        dst_x2 = min(canvas_size, x2)
+        dst_y2 = min(canvas_size, y2)
+        
+        # Paste rotated piece onto frame
+        if dst_x2 > dst_x1 and dst_y2 > dst_y1:
+            frame[dst_y1:dst_y2, dst_x1:dst_x2] = rotated[src_y1:src_y2, src_x1:src_x2]
 
     return frame
 

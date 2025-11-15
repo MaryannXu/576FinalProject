@@ -11,17 +11,15 @@ def flip_edge_feature(feature: np.ndarray) -> np.ndarray:
     """
     Flip a 1D edge feature so it corresponds to the reversed direction
     (needed when matching left of one piece to right of another).
+    Feature encodes samples along the edge in order, so flipping is just reversing.
     """
-    # TODO: if feature encodes samples along the edge in order,
-    # flipping is just reversing that order.
     return feature[::-1].copy()
 
 def edge_distance(f1: np.ndarray, f2: np.ndarray) -> float:
     """
-    Compute a distance between two edge feature vectors.
-    Example: mean squared error.
+    Compute a distance between two edge feature vectors using Mean Squared Error.
+    Lower distance means better match.
     """
-    # TODO: implement MSE or L2
     return float(np.mean((f1 - f2) ** 2))
 
 def build_compatibility_matrix(pieces: List[Piece]) -> Dict[CompatKey, float]:

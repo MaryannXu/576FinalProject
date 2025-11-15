@@ -31,11 +31,35 @@ def build_edge_feature(strip: np.ndarray, num_samples: int = 64) -> np.ndarray:
     Example: downsample along the long direction and average over the strip thickness.
     Returns a 1D numpy array.
     """
-    # TODO: implement:
-    # 1. Resize strip to (num_samples x strip_width)
-    # 2. Average across strip_width dimension
-    # 3. Flatten RGB into a 1D vector
-    feature = np.zeros(num_samples * 3, dtype=np.float32)
+    if strip.size == 0:
+        return np.zeros(num_samples * 3, dtype=np.float32)
+    
+    h, w = strip.shape[:2]
+    strip_width = min(h, w)
+    long_dim = max(h, w)
+    
+    # Resize strip to (num_samples x strip_width) along the long dimension
+    if h > w:  # Vertical strip
+        resized = cv2.resize(strip, (strip_width, num_samples), interpolation=cv2.INTER_LINEAR)
+        # Average across strip_width dimension (width)
+        averaged = np.mean(resized, axis=1)  # Shape: (num_samples, 3)
+    else:  # Horizontal strip
+        resized = cv2.resize(strip, (num_samples, strip_width), interpolation=cv2.INTER_LINEAR)
+        # Average across strip_width dimension (height)
+        averaged = np.mean(resized, axis=0)  # Shape: (num_samples, 3)
+    
+    # Flatten RGB into a 1D vector
+    feature = averaged.flatten().astype(np.float32)
+    
+    # Ensure correct size (in case of rounding issues)
+    if len(feature) != num_samples * 3:
+        # Pad or truncate if needed
+        target_size = num_samples * 3
+        if len(feature) < target_size:
+            feature = np.pad(feature, (0, target_size - len(feature)), mode='constant')
+        else:
+            feature = feature[:target_size]
+    
     return feature
 
 def compute_piece_edge_features(piece: Piece, num_samples: int = 64, strip_width: int = 5) -> None:

@@ -18,11 +18,22 @@ def rotated_edge_index(edge_index: int, orientation: int) -> int:
     """
     Given an original edge index and orientation (0,90,180,270),
     return which physical side that edge maps to.
-    (You can adjust logic depending on how you interpret rotation.)
+    Edge indices: 0=top, 1=right, 2=bottom, 3=left
+    Rotation: 0°=no change, 90°=CW, 180°=flip, 270°=CCW
     """
-    # TODO: Implement mapping logic.
-    # For now placeholder: no change
-    return edge_index
+    # Normalize orientation to 0, 90, 180, 270
+    orientation = orientation % 360
+    if orientation < 0:
+        orientation += 360
+    
+    # Map rotation to number of 90-degree clockwise turns
+    turns = orientation // 90
+    
+    # Rotate edge index clockwise
+    # 0 (top) -> 1 (right) -> 2 (bottom) -> 3 (left) -> 0 (top)
+    rotated = (edge_index + turns) % 4
+    
+    return rotated
 
 def neighbor_edge_indices() -> Dict[Tuple[int, int], Tuple[int, int]]:
     """
