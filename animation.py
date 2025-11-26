@@ -35,7 +35,7 @@ def render_frame(pieces: List[Piece], t: float, canvas_size: int) -> np.ndarray:
     Render a single animation frame for time t in [0,1].
     Uses linear interpolation between start and end poses.
     """
-    frame = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
+    frame = np.zeros((canvas_size, canvas_size, 4), dtype=np.uint8)
 
     for piece in pieces:
         if piece.start_center is None or piece.end_center is None:
@@ -93,6 +93,10 @@ def render_frame(pieces: List[Piece], t: float, canvas_size: int) -> np.ndarray:
 
     return frame
 
+import subprocess
+import shutil
+import os
+
 def animate_solution(
     pieces: List[Piece],
     board: Board,
@@ -101,18 +105,49 @@ def animate_solution(
     output_path: str
 ) -> None:
     """
-    Create an animation from scattered configuration to solved configuration.
-    Saves as a video using OpenCV VideoWriter.
+    Create an animation using ffmpeg.
     """
-    # Assume assign_final_poses already called.
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    fps = 30
-    writer = cv2.VideoWriter(output_path, fourcc, fps, (canvas_size, canvas_size))
+    # Create temp dir for frames
+    frames_dir = "temp_frames"
+    if os.path.exists(frames_dir):
+        shutil.rmtree(frames_dir)
+    os.makedirs(frames_dir)
 
+    print(f"Rendering {num_frames} frames to {frames_dir}...")
     for i in range(num_frames):
         t = i / (num_frames - 1)
         frame = render_frame(pieces, t, canvas_size)
-        writer.write(frame)
+        # Convert RGBA to BGR for OpenCV saving if needed, but we used RGBA in render_frame
+        # cv2.imwrite expects BGR or BGRA. 
+        # render_frame returns numpy array. If we constructed it as RGBA (which we did),
+        # we should convert to BGRA for cv2.imwrite to get correct colors.
+        # But wait, render_frame creates: frame = np.zeros((..., 4), dtype=np.uint8)
+        # And we paste pieces. Pieces were loaded as RGBA.
+        # So frame is RGBA.
+        # cv2.imwrite expects BGRA.
+        frame_bgra = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGRA)
+        
+        frame_path = os.path.join(frames_dir, f"frame_{i:04d}.png")
+        cv2.imwrite(frame_path, frame_bgra)
 
-    writer.release()
+    print("Encoding video with ffmpeg...")
+    # Ensure output ends with .mp4
+    if not output_path.endswith(".mp4"):
+        output_path = os.path.splitext(output_path)[0] + ".mp4"
+
+    cmd = [
+        "ffmpeg",
+        "-y", # Overwrite
+        "-framerate", "30",
+        "-i", f"{frames_dir}/frame_%04d.png",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        output_path
+    ]
+    
+    subprocess.run(cmd, check=True)
+    
+    # Cleanup
+    shutil.rmtree(frames_dir)
+    print(f"Animation saved to {output_path}")
 
