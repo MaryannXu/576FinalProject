@@ -25,7 +25,8 @@ def assign_final_poses(pieces: List[Piece], board: Board, cell_size: int) -> Non
             center_y = (r + 0.5) * cell_size
 
             piece.end_center = (center_x, center_y)
-            piece.end_angle = float(orientation)
+            # Orientation 0=0, 1=90CW (-90), 2=180 (-180), 3=270CW (-270)
+            piece.end_angle = float(orientation * -90.0)
 
 def lerp(a: float, b: float, t: float) -> float:
     return (1.0 - t) * a + t * b

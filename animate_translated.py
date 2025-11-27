@@ -11,7 +11,7 @@ sys.path.append(os.getcwd())
 
 from models import Piece, Board
 from animation import assign_final_poses, animate_solution
-import recombine_translated_v2 as solver_v2
+import recombine_translated as solver
 
 def load_pieces_with_start_pos(json_path: str) -> Tuple[List[Piece], int]:
     """
@@ -35,7 +35,13 @@ def load_pieces_with_start_pos(json_path: str) -> Tuple[List[Piece], int]:
     for p_data in pieces_data:
         idx = p_data['index']
         img_rel_path = p_data['image']
-        img_path = os.path.join(base_dir, img_rel_path)
+        
+        # Check if path is valid as is (relative to CWD)
+        if os.path.exists(img_rel_path):
+            img_path = img_rel_path
+        else:
+            # Fallback to relative to json file
+            img_path = os.path.join(base_dir, img_rel_path)
         
         if not os.path.exists(img_path):
             print(f"Warning: Image not found at {img_path}")
@@ -72,15 +78,22 @@ def load_pieces_with_start_pos(json_path: str) -> Tuple[List[Piece], int]:
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 animate_translated.py <features_json_path>")
+        print("Usage: python3 animate_translated.py <image_name_or_features_json>")
         return
 
-    json_path = sys.argv[1]
+    output_dir = sys.argv[1]
+    
+    # Assume the argument is the directory containing features.json
+    json_path = os.path.join(output_dir, "features.json")
+    
+    # Derive base name from directory name for output filename
+    base_name = os.path.basename(output_dir.rstrip(os.sep))
+
     if not os.path.exists(json_path):
         print(f"Error: {json_path} not found.")
         return
 
-    print("Loading pieces with start positions...")
+    print(f"Loading pieces with start positions from {json_path}...")
     pieces, target_size = load_pieces_with_start_pos(json_path)
     
     n = len(pieces)
@@ -88,8 +101,8 @@ def main():
     rows = cols = side
     
     print("Solving puzzle...")
-    compat = solver_v2.build_ssd_compatibility(pieces)
-    board = solver_v2.solve_puzzle_best_first(pieces, rows, cols, compat)
+    compat = solver.build_ssd_compatibility(pieces)
+    board = solver.solve_puzzle_best_first(pieces, rows, cols, compat)
     
     if not board:
         print("Failed to solve puzzle.")
@@ -115,8 +128,7 @@ def main():
             cx, cy = p.end_center
             p.end_center = (cx + offset_x, cy + offset_y)
             
-    base_name = os.path.splitext(os.path.basename(json_path))[0]
-    output_path = f"animation_{base_name}.mp4"
+    output_path = os.path.join(output_dir, f"animation_{base_name}.mp4")
     animate_solution(pieces, board, CANVAS_SIZE, num_frames=90, output_path=output_path)
     print(f"Animation saved to {output_path}")
 
