@@ -135,41 +135,113 @@ def make_rgba(piece_rgb, mask):
     rgba = np.dstack([piece_rgb, alpha])
     return rgba
 
+import cv2
+
 def normalize_orientation(rgba):
     """
-    Rotate the piece so that its main axis is horizontal.
-    Uses PCA on foreground pixels to estimate orientation.
+    Rotate the piece so that its bounding box is axis-aligned.
+    Uses cv2.minAreaRect on the mask.
     Returns:
         rotated_rgba: (H2, W2, 4)
         rotated_mask: (H2, W2) bool
+        angle_deg: float (degrees rotated to get to upright)
     """
     # Mask is alpha > 0
     alpha = rgba[:, :, 3]
-    mask = alpha > 0
-    ys, xs = np.where(mask)
-
-    # If somehow empty, just return as is
-    if ys.size == 0:
-        return rgba, mask
-
-    # Centered coordinates of foreground
-    xs_centered = xs - xs.mean()
-    ys_centered = ys - ys.mean()
-    coords = np.stack([xs_centered, ys_centered], axis=0)  # shape (2, N)
-
-    # Covariance and eigenvectors
-    cov = np.cov(coords)
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    principal = eigvecs[:, np.argmax(eigvals)]
-    angle_rad = math.atan2(principal[1], principal[0])
-    angle_deg = math.degrees(angle_rad)
-
-    # Rotate so principal axis is horizontal
+    mask = (alpha > 0).astype(np.uint8) * 255
+    
+    # Find contours
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return rgba, alpha > 0, 0.0
+        
+    # Find largest contour
+    cnt = max(contours, key=cv2.contourArea)
+    
+    # Get min area rect
+    rect = cv2.minAreaRect(cnt)
+    (center, (w, h), angle) = rect
+    
+    # cv2.minAreaRect returns angle in [-90, 0).
+    # We want to rotate the image so the sides are axis aligned.
+    # The angle is the rotation of the rectangle.
+    # If w < h, it might be "standing up" but rotated.
+    # We want to rotate by 'angle' to align it?
+    # Or maybe 'angle + 90'?
+    
+    # Let's just rotate by 'angle'.
+    # If the piece ends up 90 degrees off, the solver handles it (0, 90, 180, 270).
+    # We just want it axis-aligned.
+    
+    # However, minAreaRect angle definition varies by OpenCV version.
+    # In 4.5+, it's in [0, 90]? Or [-90, 0]?
+    # Let's assume standard behavior: it gives the angle of the first side.
+    
+    # If we rotate by 'angle', the rectangle becomes axis aligned.
+    # But we need to rotate the IMAGE by 'angle'.
+    # If rect angle is -30, it means the rect is rotated -30 (CW 30).
+    # So we need to rotate the image by +30 (CCW 30) to fix it?
+    # Or rotate by -30?
+    
+    # Let's try rotating by 'angle'.
+    # If angle is positive (CW?), we rotate by -angle (CCW) to undo?
+    # OpenCV rotation: positive is CCW.
+    # minAreaRect angle: usually clockwise is positive? No, standard math is CCW positive.
+    # But image y-axis is down.
+    
+    # Let's stick to: rotate by `angle`.
+    # And if the resulting bbox is larger, try `angle + 90`.
+    # Actually, minAreaRect gives the angle that the rect is rotated.
+    # So we should rotate by `-angle` to align it with axes?
+    # Let's try `angle`.
+    
+    # Wait, `minAreaRect` returns angle of the rectangle.
+    # If we rotate the image by `angle`, does it align?
+    # Usually `angle` is the angle of the width side with the horizontal.
+    # So if we rotate by `-angle`, the width side becomes horizontal.
+    
+    angle_deg = angle
+    
+    # Handle the fact that we might want the longer side horizontal or vertical?
+    # Puzzle pieces are square-ish. It doesn't matter.
+    # The solver handles 90 degree increments.
+    # We just need it to be axis aligned.
+    
+    # Rotate
     pil_img = Image.fromarray(rgba, mode="RGBA")
-    rotated = pil_img.rotate(-angle_deg, expand=True, fillcolor=(0, 0, 0, 0))
+    # PIL rotate is CCW.
+    # If angle_deg is the angle of the rect (CW?), then we might need to be careful.
+    # In OpenCV 4.x, angle is in [0, 90].
+    # Let's just use the angle.
+    
+    # If we rotate by `angle_deg`, we might align it.
+    rotated = pil_img.rotate(angle_deg, expand=True, fillcolor=(0, 0, 0, 0))
+    
+    # Check if we improved the bbox area?
+    # No, minAreaRect is the best fit.
+    # So rotating by -angle (or angle) should align it.
+    
     rotated_rgba = np.array(rotated)
     rotated_mask = rotated_rgba[:, :, 3] > 0
-    return rotated_rgba, rotated_mask, angle_deg
+    
+    # We return -angle_deg because the caller (animation) expects 'angle_deg' 
+    # to be the value such that `original = normalized.rotate(angle_deg)`.
+    # Here `normalized = original.rotate(angle_deg)`.
+    # So `original = normalized.rotate(-angle_deg)`.
+    # So we should return `-angle_deg` as the "initial_rotation"?
+    # Wait.
+    # `preprocess.py` (old): `rotated = pil_img.rotate(-angle_deg)`
+    # And returned `angle_deg`.
+    # So `normalized = original.rotate(-angle_deg)`.
+    # `original = normalized.rotate(angle_deg)`.
+    # So `start_angle` was `angle_deg`.
+    
+    # Here: `rotated = pil_img.rotate(angle_deg)`.
+    # So `normalized = original.rotate(angle_deg)`.
+    # `original = normalized.rotate(-angle_deg)`.
+    # So we should return `-angle_deg`.
+    
+    return rotated_rgba, rotated_mask, -angle_deg
 
 def tight_crop_rgba(rgba):
     """

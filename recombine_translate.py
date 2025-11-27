@@ -75,10 +75,12 @@ def load_pieces_raw(json_path: str) -> Tuple[List[Piece], int]:
         rgb = img_arr[:, :, :3].astype(np.float32)
         
         # Store features in standard order: Top, Right, Bottom, Left (relative to image)
-        piece.edge_features[0] = rgb[0, :, :]      # Top
-        piece.edge_features[1] = rgb[:, -1, :]     # Right
-        piece.edge_features[2] = rgb[-1, :, :]     # Bottom
-        piece.edge_features[3] = rgb[:, 0, :]      # Left
+        # User requested to look 20 pixels inside (index 19) to avoid rotation artifacts
+        OFFSET = 19
+        piece.edge_features[0] = rgb[OFFSET, :, :]      # Top
+        piece.edge_features[1] = rgb[:, -(OFFSET+1), :] # Right
+        piece.edge_features[2] = rgb[-(OFFSET+1), :, :] # Bottom
+        piece.edge_features[3] = rgb[:, OFFSET, :]      # Left
         
         loaded_pieces.append(piece)
         
@@ -220,179 +222,196 @@ def build_ssd_compatibility(pieces: List[Piece]) -> Dict[Tuple[int, int, int, in
             # Given the small number of pieces (e.g. 20), we can compute on the fly or cache.
             pass
             
-    return compat # Not used in this new design, we'll compute on demand or cache
+def get_factor_pairs(n: int) -> List[Tuple[int, int]]:
+    """
+    Find all factor pairs (r, c) such that r * c = n.
+    Returns list of tuples, e.g. for 20: [(4, 5), (5, 4), (2, 10), (10, 2)...]
+    Sorted by 'squareness' (aspect ratio closer to 1 first).
+    """
+    factors = []
+    for i in range(1, int(math.sqrt(n)) + 1):
+        if n % i == 0:
+            r = i
+            c = n // i
+            factors.append((r, c))
+            if r != c:
+                factors.append((c, r))
+                
+    # Sort by abs(r-c) to prefer square shapes
+    factors.sort(key=lambda x: abs(x[0] - x[1]))
+    return factors
 
-def solve_puzzle_best_first(
+def solve_from_seed(
+    pieces: List[Piece],
+    seed_id: int,
+    seed_orient: int,
+    ssd_cache: Dict,
+    max_rows: int,
+    max_cols: int
+) -> Tuple[Optional[Board], float]:
+    """
+    Run the greedy best-first solver starting from a specific seed.
+    Enforces that the grid never exceeds max_rows x max_cols.
+    Returns (Board, total_score). Lower score is better.
+    """
+    virtual_grid = {} # (r,c) -> (piece_id, orientation)
+    placed_pieces = set()
+    
+    # Place seed
+def solve_raster_scan(
     pieces: List[Piece],
     rows: int,
     cols: int,
-    compat_unused: Dict
-) -> Optional[Board]:
+    seed_p: Piece,
+    seed_orient: int,
+    ssd_cache: Dict
+) -> Tuple[Optional[Board], float]:
+    """
+    Tries to fill a rows x cols grid in raster order (row by row),
+    starting with seed_p at (0,0) with seed_orient.
+    Greedily picks the best fit for each subsequent cell.
+    """
+    board = Board(rows, cols)
+    board.place_piece(0, 0, seed_p.id, seed_orient)
     
-    # Precompute all pairwise edge SSDs (both normal and reversed) to speed up
-    # cache[(idA, edgeA, idB, edgeB, reverseB)] = ssd
-    ssd_cache = {}
+    placed_ids = {seed_p.id}
+    total_score = 0.0
     
+    # Helper to get SSD
     def get_ssd(pA, edgeA, pB, edgeB, reverseB):
         key = (pA.id, edgeA, pB.id, edgeB, reverseB)
         if key in ssd_cache:
             return ssd_cache[key]
-        
         fA = pA.edge_features[edgeA]
         fB = pB.edge_features[edgeB]
         if reverseB:
             fB = fB[::-1]
-            
         val = compute_ssd(fA, fB)
         ssd_cache[key] = val
         return val
 
-    # We need to find the best starting pair (best match across all possibilities)
-    # Possibilities: (PieceA, OrientA) placed at (0,0), (PieceB, OrientB) placed at (0,1) or (1,0)
-    # Actually, we can fix PieceA's orientation to 0 (w.l.o.g for the first piece, assuming we don't care about global rotation)
-    # But if we want "upright", we might care. But we don't know what is upright.
-    # So let's just pick the best matching pair of edges and lock them.
-    
-    all_matches = []
-    
-    # Iterate all pairs of pieces
-    for i in range(len(pieces)):
-        for j in range(len(pieces)):
-            if i == j: continue
-            pA = pieces[i]
-            pB = pieces[j]
-            
-            # Try all raw edge combinations
-            for ea in range(4):
-                for eb in range(4):
-                    # Calculate SSD for direct match and reversed match
-                    # Direct: A(ea) matches B(eb)
-                    s_direct = get_ssd(pA, ea, pB, eb, False)
-                    s_rev = get_ssd(pA, ea, pB, eb, True)
-                    
-                    # We store both. The solver will deduce orientation from this.
-                    # If A(ea) matches B(eb) directly:
-                    # It means in the global frame, Edge(A) and Edge(B) are adjacent and consistent.
-                    all_matches.append((s_direct, pA, ea, pB, eb, False))
-                    all_matches.append((s_rev, pA, ea, pB, eb, True))
-                    
-    all_matches.sort(key=lambda x: x[0])
-    
-    # Start with best match
-    # We need to pick a reference frame.
-    # Let's say the first piece in the match is at (0,0) with Orientation 0.
-    # We need to determine the second piece's position and orientation.
-    
-    # Match: A(edge_a) touches B(edge_b).
-    # If A is Orient 0.
-    # If edge_a is Right (1). Then B is to the Right.
-    # So B's Left edge must be the one touching A's Right.
-    # B's Left edge in global frame must be edge_b.
-    # So we need to find OrientB such that get_edge(B, OrientB, LEFT) == raw_edge_b (possibly reversed).
-    
-    # Let's generalize:
-    # We place A at (0,0) with Orient 0.
-    # We have a match between RawEdgeA and RawEdgeB with score S, reversed=R.
-    # RawEdgeA corresponds to GlobalEdgeA (since OrientA=0).
-    # We place B at neighbor of A in direction GlobalEdgeA.
-    # The GlobalEdge of B touching A is OPPOSITE[GlobalEdgeA].
-    # We need to find OrientB such that:
-    #   get_edge_feature(B, OrientB, OPPOSITE[GlobalEdgeA]) == (RawEdgeB, reversed=R relative to RawEdgeA?)
-    
-    # Wait, the SSD was computed between RawEdgeA and (RawEdgeB potentially reversed).
-    # So pixels(RawEdgeA) ~ pixels(RawEdgeB_transformed).
-    # We know pixels(GlobalEdgeA) = pixels(RawEdgeA) (since OrientA=0).
-    # We need pixels(GlobalEdgeB_touching) ~ pixels(GlobalEdgeA).
-    # So pixels(GlobalEdgeB_touching) ~ pixels(RawEdgeB_transformed).
-    
-    # This implies we need to find OrientB such that the feature extracted for OPPOSITE[GlobalEdgeA]
-    # is physically identical to the feature used in the match.
-    
-    best_match = all_matches[0]
-    score, pA, raw_ea, pB, raw_eb, rev = best_match
-    
-    virtual_grid = {} # (r,c) -> (piece_id, orientation)
-    placed_pieces = set()
-    
-    # Place A
-    virtual_grid[(0,0)] = (pA.id, 0)
-    placed_pieces.add(pA.id)
-    
-    pq = [] # (score, p_source_id, source_r, source_c, source_global_edge)
-    
-    # Helper to push neighbors
-    def add_neighbors(pid, r, c, orient):
-        # For each of the 4 global edges of the placed piece
-        for global_edge in range(4):
-            # Check if neighbor cell is empty
-            dr, dc = DIR_VEC[global_edge]
-            nr, nc = r + dr, c + dc
-            if (nr, nc) in virtual_grid:
+    for r in range(rows):
+        for c in range(cols):
+            if r == 0 and c == 0:
                 continue
                 
-            # We want to find a piece that matches 'pid' on 'global_edge'
-            # The source feature is:
-            p = next(p for p in pieces if p.id == pid)
-            src_feat = get_edge_feature(p, orient, global_edge)
+            # Find best piece for (r,c)
+            best_cand_id = None
+            best_cand_orient = -1
+            best_local_score = float('inf')
             
-            # We look for any unplaced piece that has a matching edge
+            # Constraints:
+            # Must match Left neighbor (r, c-1) if c > 0
+            # Must match Top neighbor (r-1, c) if r > 0
+            
+            left_neighbor = None
+            top_neighbor = None
+            
+            if c > 0:
+                left_pid, left_orient = board.grid[r][c-1]
+                left_neighbor = (next(p for p in pieces if p.id == left_pid), left_orient)
+                
+            if r > 0:
+                top_pid, top_orient = board.grid[r-1][c]
+                top_neighbor = (next(p for p in pieces if p.id == top_pid), top_orient)
+            
+            # Iterate all unused pieces
             for cand in pieces:
-                if cand.id in placed_pieces:
+                if cand.id in placed_ids:
                     continue
                     
-                # Try all 4 orientations of candidate
-                for cand_orient in range(4):
-                    # The candidate's edge touching source is OPPOSITE[global_edge]
-                    cand_edge_idx = OPPOSITE[global_edge]
-                    cand_feat = get_edge_feature(cand, cand_orient, cand_edge_idx)
+                # For translation only, orientation is always 0
+                for cand_orient in range(1):
+                    current_score = 0.0
+                    valid = True
                     
-                    # Compute SSD
-                    s = compute_ssd(src_feat, cand_feat)
-                    
-                    # Push to PQ
-                    heapq.heappush(pq, (s, pid, r, c, global_edge, cand.id, cand_orient))
+                    # Check Left match: Left(Right) vs Cand(Left)
+                    if left_neighbor:
+                        lp, lo = left_neighbor
+                        # lp Right edge vs cand Left edge
+                        # We use get_edge_feature logic but via get_ssd helper?
+                        # get_ssd expects (pA, raw_edgeA, pB, raw_edgeB, revB)
+                        # But get_edge_feature handles the rotation mapping.
+                        # Let's use get_edge_feature directly for clarity/correctness
+                        # since we already implemented it and it works.
+                        
+                        f_left = get_edge_feature(lp, lo, RIGHT)
+                        f_cand = get_edge_feature(cand, cand_orient, LEFT)
+                        current_score += compute_ssd(f_left, f_cand)
+                        
+                    # Check Top match: Top(Bottom) vs Cand(Top)
+                    if top_neighbor:
+                        tp, to = top_neighbor
+                        f_top = get_edge_feature(tp, to, BOTTOM)
+                        f_cand = get_edge_feature(cand, cand_orient, TOP)
+                        current_score += compute_ssd(f_top, f_cand)
+                        
+                    if current_score < best_local_score:
+                        best_local_score = current_score
+                        best_cand_id = cand.id
+                        best_cand_orient = cand_orient
+            
+            if best_cand_id is None:
+                # Could not find any piece? Should not happen unless pieces ran out (impossible by loop)
+                # or logic error.
+                return None, float('inf')
+                
+            board.place_piece(r, c, best_cand_id, best_cand_orient)
+            placed_ids.add(best_cand_id)
+            total_score += best_local_score
+            
+    return board, total_score
 
-    add_neighbors(pA.id, 0, 0, 0)
+def solve_puzzle_constrained(
+    pieces: List[Piece],
+    rows_ignored: int,
+    cols_ignored: int,
+    compat_unused: Dict
+) -> Optional[Board]:
+    """
+    Robust solver that enforces rectangular shapes using Raster Scan.
+    """
+    best_board = None
+    best_avg_score = float('inf')
     
-    while len(placed_pieces) < len(pieces) and pq:
-        s, src_id, src_r, src_c, src_edge, cand_id, cand_orient = heapq.heappop(pq)
+    n = len(pieces)
+    shapes = get_factor_pairs(n)
+    # Filter out 1xN shapes if possible, user dislikes them.
+    # Keep only shapes where min_dim >= 2?
+    shapes = [s for s in shapes if min(s) >= 2]
+    if not shapes:
+        # Fallback if prime number or something
+        shapes = get_factor_pairs(n)
         
-        if cand_id in placed_pieces:
-            continue
-            
-        # Determine location
-        dr, dc = DIR_VEC[src_edge]
-        nr, nc = src_r + dr, src_c + dc
-        
-        if (nr, nc) in virtual_grid:
-            continue
-            
-        # Place it
-        virtual_grid[(nr, nc)] = (cand_id, cand_orient)
-        placed_pieces.add(cand_id)
-        
-        add_neighbors(cand_id, nr, nc, cand_orient)
-        
-    # Normalize grid
-    if not virtual_grid:
-        return None
-        
-    min_r = min(r for r, c in virtual_grid.keys())
-    min_c = min(c for r, c in virtual_grid.keys())
-    max_r = max(r for r, c in virtual_grid.keys())
-    max_c = max(c for r, c in virtual_grid.keys())
+    print(f"Running constrained solver with shapes: {shapes}...")
     
-    h = max_r - min_r + 1
-    w = max_c - min_c + 1
+    ssd_cache = {} # Not used in raster scan currently, but could be
     
-    print(f"Reconstructed grid size: {h}x{w}")
-    
-    board = Board(h, w) # Use dynamic size
-    
-    for (r, c), (pid, orient) in virtual_grid.items():
-        board.place_piece(r - min_r, c - min_c, pid, orient)
+    for r_dim, c_dim in shapes:
+        print(f"  Trying shape {r_dim}x{c_dim}...")
         
-    return board
+        # Try every piece as (0,0) with every orientation
+        for seed_p in pieces:
+            for seed_orient in range(4):
+                board, score = solve_raster_scan(pieces, r_dim, c_dim, seed_p, seed_orient, ssd_cache)
+                
+                if board:
+                    # Normalize score by number of internal edges
+                    # Internal vertical edges: r * (c-1)
+                    # Internal horizontal edges: (r-1) * c
+                    num_edges = r_dim * (c_dim - 1) + (r_dim - 1) * c_dim
+                    avg_score = score / max(1, num_edges)
+                    
+                    if avg_score < best_avg_score:
+                        best_avg_score = avg_score
+                        best_board = board
+                        
+    if best_board:
+        print(f"Best solution score: {best_avg_score:.2f}, Size: {best_board.rows}x{best_board.cols}")
+    else:
+        print("Failed to find any valid solution.")
+        
+    return best_board
 
 def stitch_solution(board: Board, pieces: List[Piece], target_size: int, output_path: str):
     rows = board.rows
@@ -416,8 +435,7 @@ def stitch_solution(board: Board, pieces: List[Piece], target_size: int, output_
             # orient 0=0, 1=90CW, 2=180, 3=270CW
             # PIL rotate is CCW, so we use -90*orient
             p_img = Image.fromarray(piece.image)
-            p_img = p_img.rotate(-90 * orient, expand=False) # expand=False to keep size? 
-            # Wait, if we rotate 90, size might change if not square. But pieces are square (target_size).
+            p_img = p_img.rotate(-90 * orient, expand=False)
             
             canvas.paste(p_img, (c * target_size, r * target_size))
             
@@ -440,15 +458,12 @@ def main():
     print(f"Loading pieces from {json_path}...")
     pieces, target_size = load_pieces_raw(json_path)
     
-    n = len(pieces)
-    side = int(math.sqrt(n))
-    rows = cols = side
+    # n = len(pieces)
+    # side = int(math.sqrt(n))
+    # rows = cols = side
     
-    print("Computing SSD compatibility...")
-    # compat = build_ssd_compatibility(pieces) # Not used directly anymore
-    
-    print("Solving with Best-First...")
-    board = solve_puzzle_best_first(pieces, rows, cols, {})
+    print("Solving with Robust Multi-Seed & Shape Constraint...")
+    board = solve_puzzle_constrained(pieces, 0, 0, {})
     
     if board:
         output_filename = os.path.join(output_dir, f"recombined_{base_name}.png")

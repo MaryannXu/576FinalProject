@@ -11,7 +11,7 @@ sys.path.append(os.getcwd())
 
 from models import Piece, Board
 from animation import assign_final_poses, animate_solution
-import recombine_translated as solver
+import recombine_translate as solver
 
 def load_pieces_with_start_pos(json_path: str) -> Tuple[List[Piece], int]:
     """
@@ -70,7 +70,7 @@ def load_pieces_with_start_pos(json_path: str) -> Tuple[List[Piece], int]:
         cy = (y0 + y1) / 2.0
         
         piece.start_center = (cx, cy)
-        piece.start_angle = 0.0 # Translated only
+        piece.start_angle = p_data.get('initial_rotation', 0.0)
         
         loaded_pieces.append(piece)
         
@@ -101,8 +101,8 @@ def main():
     rows = cols = side
     
     print("Solving puzzle...")
-    compat = solver.build_ssd_compatibility(pieces)
-    board = solver.solve_puzzle_best_first(pieces, rows, cols, compat)
+    # compat = solver.build_ssd_compatibility(pieces) # Internal now
+    board = solver.solve_puzzle_constrained(pieces, rows, cols, {})
     
     if not board:
         print("Failed to solve puzzle.")
